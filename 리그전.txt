@@ -1,0 +1,385 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { initializeApp } from "firebase/app";
+import { doc, getFirestore, onSnapshot, setDoc } from "firebase/firestore";
+import { Trophy, RotateCcw, PlusCircle, Medal } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+
+const CLASSES = ["가람반", "나리반", "다솜반", "라온반", "마루반", "바름반", "사랑반"];
+const SET_COUNT = 5;
+const STORAGE_KEY = "grade6-badminton-league-v1";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyD-5zrSaRv2zzgiMx3Lhf7ywzAs0HS5bMw",
+  authDomain: "project-365006779830143485.firebaseapp.com",
+  projectId: "project-365006779830143485",
+  storageBucket: "project-365006779830143485.firebasestorage.app",
+  messagingSenderId: "810628243957",
+  appId: "1:810628243957:web:bb67cebaeb572d3b3780bc"
+};
+
+const FIREBASE_ENABLED = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
+const leagueDocRef = FIREBASE_ENABLED
+  ? doc(getFirestore(initializeApp(firebaseConfig)), "leagues", "grade6-badminton")
+  : null;
+
+function buildInitialTeams() {
+  return CLASSES.map((name) => ({
+    name,
+    games: 0,
+    wins: 0,
+    losses: 0,
+    setWon: 0,
+    setLost: 0,
+  }));
+}
+
+function pct(wins, games) {
+  if (!games) return 0;
+  return wins / games;
+}
+
+function pctText(wins, games) {
+  if (!games) return "-";
+  return pct(wins, games).toFixed(3).replace(/^0/, "");
+}
+
+function sortTeams(teams) {
+  return [...teams].sort((a, b) => {
+    const byPct = pct(b.wins, b.games) - pct(a.wins, a.games);
+    if (byPct !== 0) return byPct;
+
+    const aDiff = a.setWon - a.setLost;
+    const bDiff = b.setWon - b.setLost;
+    if (bDiff !== aDiff) return bDiff - aDiff;
+
+    if (b.setWon !== a.setWon) return b.setWon - a.setWon;
+    if (b.wins !== a.wins) return b.wins - a.wins;
+
+    return a.name.localeCompare(b.name, "ko");
+  });
+}
+
+export default function BadmintonLeagueMobileWeb() {
+  const [teamA, setTeamA] = useState("");
+  const [teamB, setTeamB] = useState("");
+  const [sets, setSets] = useState(Array(SET_COUNT).fill(""));
+  const [teams, setTeams] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (!saved) return buildInitialTeams();
+      const parsed = JSON.parse(saved);
+      return parsed.teams || buildInitialTeams();
+    } catch {
+      return buildInitialTeams();
+    }
+  });
+  const [history, setHistory] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (!saved) return [];
+      const parsed = JSON.parse(saved);
+      return parsed.history || [];
+    } catch {
+      return [];
+    }
+  });
+  const [savedNotice, setSavedNotice] = useState(false);
+  const [cloudReady, setCloudReady] = useState(!FIREBASE_ENABLED);
+  const loadedFromCloud = useRef(false);
+
+  const selectedBoth = teamA && teamB && teamA !== teamB;
+  const completeSets = sets.every(Boolean);
+  const aSetWins = sets.filter((winner) => winner === teamA).length;
+  const bSetWins = sets.filter((winner) => winner === teamB).length;
+  const matchWinner = selectedBoth && completeSets ? (aSetWins > bSetWins ? teamA : teamB) : "";
+  const canSubmit = selectedBoth && completeSets && aSetWins !== bSetWins;
+
+  const ranking = useMemo(() => sortTeams(teams), [teams]);
+
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !leagueDocRef) return;
+
+    const unsubscribe = onSnapshot(leagueDocRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setTeams(data.teams || buildInitialTeams());
+        setHistory(data.history || []);
+      }
+      loadedFromCloud.current = true;
+      setCloudReady(true);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    const data = { teams, history, updatedAt: new Date().toISOString() };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+
+    if (FIREBASE_ENABLED && leagueDocRef && loadedFromCloud.current) {
+      setDoc(leagueDocRef, data, { merge: true }).catch(() => {
+        // 인터넷이 끊기거나 권한 설정이 잘못되어도 로컬 저장은 유지됩니다.
+      });
+    }
+
+    setSavedNotice(true);
+    const timer = window.setTimeout(() => setSavedNotice(false), 1000);
+    return () => window.clearTimeout(timer);
+  }, [teams, history]);
+
+  const updateSetWinner = (index, winner) => {
+    const next = [...sets];
+    next[index] = winner;
+    setSets(next);
+  };
+
+  const submitMatch = () => {
+    if (!canSubmit) return;
+
+    const loser = matchWinner === teamA ? teamB : teamA;
+    const winnerSetWins = matchWinner === teamA ? aSetWins : bSetWins;
+    const loserSetWins = matchWinner === teamA ? bSetWins : aSetWins;
+
+    setTeams((prev) =>
+      prev.map((team) => {
+        if (team.name === matchWinner) {
+          return {
+            ...team,
+            games: team.games + 1,
+            wins: team.wins + 1,
+            setWon: team.setWon + winnerSetWins,
+            setLost: team.setLost + loserSetWins,
+          };
+        }
+        if (team.name === loser) {
+          return {
+            ...team,
+            games: team.games + 1,
+            losses: team.losses + 1,
+            setWon: team.setWon + loserSetWins,
+            setLost: team.setLost + winnerSetWins,
+          };
+        }
+        return team;
+      })
+    );
+
+    setHistory((prev) => [
+      {
+        id: Date.now(),
+        teamA,
+        teamB,
+        aSetWins,
+        bSetWins,
+        winner: matchWinner,
+      },
+      ...prev,
+    ]);
+
+    setSets(Array(SET_COUNT).fill(""));
+  };
+
+  const resetAll = () => {
+    setTeamA("");
+    setTeamB("");
+    setSets(Array(SET_COUNT).fill(""));
+    setTeams(buildInitialTeams());
+    setHistory([]);
+    window.localStorage.removeItem(STORAGE_KEY);
+    if (FIREBASE_ENABLED && leagueDocRef) {
+      setDoc(
+        leagueDocRef,
+        { teams: buildInitialTeams(), history: [], updatedAt: new Date().toISOString() },
+        { merge: true }
+      ).catch(() => {});
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 px-4 py-5 text-slate-900">
+      <div className="mx-auto max-w-md space-y-4">
+        <header className="space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="rounded-2xl bg-slate-900 p-2 text-white shadow-sm">
+              <Trophy size={22} />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold">6학년 배드민턴 리그전</h1>
+              <p className="text-sm text-slate-500">5세트 결과 입력 · 승률순 자동 순위</p>
+              <p className="text-xs font-semibold text-emerald-600">
+                {savedNotice
+                  ? FIREBASE_ENABLED
+                    ? "클라우드와 브라우저에 자동 저장됨"
+                    : "브라우저에 자동 저장됨"
+                  : FIREBASE_ENABLED
+                    ? cloudReady
+                      ? "여러 기기에서 같은 기록을 볼 수 있습니다"
+                      : "클라우드 기록 불러오는 중"
+                    : "기록은 이 브라우저에 저장됩니다"}
+              </p>
+            </div>
+          </div>
+        </header>
+
+        <Card className="rounded-3xl border-0 shadow-sm">
+          <CardContent className="space-y-4 p-4">
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1">
+                <span className="text-xs font-semibold text-slate-500">반 1</span>
+                <select
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-base font-semibold outline-none focus:border-slate-900"
+                  value={teamA}
+                  onChange={(e) => {
+                    setTeamA(e.target.value);
+                    setSets(Array(SET_COUNT).fill(""));
+                  }}
+                >
+                  <option value="">선택</option>
+                  {CLASSES.map((name) => (
+                    <option key={name} value={name} disabled={name === teamB}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-xs font-semibold text-slate-500">반 2</span>
+                <select
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-base font-semibold outline-none focus:border-slate-900"
+                  value={teamB}
+                  onChange={(e) => {
+                    setTeamB(e.target.value);
+                    setSets(Array(SET_COUNT).fill(""));
+                  }}
+                >
+                  <option value="">선택</option>
+                  {CLASSES.map((name) => (
+                    <option key={name} value={name} disabled={name === teamA}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <AnimatePresence>
+              {selectedBoth && (
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -12 }}
+                  className="space-y-3"
+                >
+                  <div className="rounded-2xl bg-slate-100 p-3 text-center">
+                    <p className="text-sm text-slate-500">현재 세트 스코어</p>
+                    <p className="text-2xl font-black">
+                      {teamA} {aSetWins} : {bSetWins} {teamB}
+                    </p>
+                    {completeSets && (
+                      <p className="mt-1 text-sm font-semibold text-slate-700">승리: {matchWinner}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    {sets.map((winner, index) => (
+                      <div key={index} className="rounded-2xl border border-slate-200 bg-white p-3">
+                        <p className="mb-2 text-sm font-bold">{index + 1}세트 승리반</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {[teamA, teamB].map((name) => (
+                            <button
+                              key={name}
+                              type="button"
+                              onClick={() => updateSetWinner(index, name)}
+                              className={`rounded-2xl px-3 py-3 text-sm font-bold transition ${
+                                winner === name
+                                  ? "bg-slate-900 text-white shadow-sm"
+                                  : "bg-slate-100 text-slate-600"
+                              }`}
+                            >
+                              {name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <Button
+                    onClick={submitMatch}
+                    disabled={!canSubmit}
+                    className="h-14 w-full rounded-2xl text-base font-black disabled:opacity-40"
+                  >
+                    <PlusCircle className="mr-2" size={20} />
+                    경기 결과 입력하기
+                  </Button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-3xl border-0 shadow-sm">
+          <CardContent className="p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Medal size={20} />
+                <h2 className="text-lg font-black">순위</h2>
+              </div>
+              <Button variant="outline" size="sm" className="rounded-xl" onClick={resetAll}>
+                <RotateCcw size={15} className="mr-1" /> 초기화
+              </Button>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-100 text-xs text-slate-500">
+                  <tr>
+                    <th className="px-2 py-2 text-left">순위</th>
+                    <th className="px-2 py-2 text-left">반</th>
+                    <th className="px-2 py-2">승률</th>
+                    <th className="px-2 py-2">승</th>
+                    <th className="px-2 py-2">패</th>
+                    <th className="px-2 py-2">세트득실</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ranking.map((team, index) => (
+                    <tr key={team.name} className="border-t border-slate-100">
+                      <td className="px-2 py-3 font-black">{index + 1}</td>
+                      <td className="px-2 py-3 font-bold">{team.name}</td>
+                      <td className="px-2 py-3 text-center font-semibold">{pctText(team.wins, team.games)}</td>
+                      <td className="px-2 py-3 text-center">{team.wins}</td>
+                      <td className="px-2 py-3 text-center">{team.losses}</td>
+                      <td className="px-2 py-3 text-center font-semibold">{team.setWon - team.setLost}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+
+        {history.length > 0 && (
+          <Card className="rounded-3xl border-0 shadow-sm">
+            <CardContent className="p-4">
+              <h2 className="mb-3 text-lg font-black">입력된 경기</h2>
+              <div className="space-y-2">
+                {history.map((game) => (
+                  <div key={game.id} className="rounded-2xl bg-white p-3 text-sm shadow-sm">
+                    <p className="font-bold">
+                      {game.teamA} {game.aSetWins} : {game.bSetWins} {game.teamB}
+                    </p>
+                    <p className="text-slate-500">승리: {game.winner}</p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
